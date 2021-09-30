@@ -3,27 +3,27 @@ import numpy as np
 from gym import spaces
 from gym.utils import seeding
 
-from gym_game.envs import PyGame2D
+from gym_game.envs.pygame_2d import PyGame2D
 
 
 class CommunicateEnv(gym.Env):
-    def __init__(self, amount_of_bots):
+    def __init__(self, world_id, amount_of_bots):
         self.seed()
-
+        self.world_id = world_id
         self.amount_of_bots = amount_of_bots
         self.world_size = 100
         self.vision_range = 10
-        self.pygame = PyGame2D(world_size=(self.world_size, self.world_size),
+        self.pygame = PyGame2D(world_id=world_id,
+                               world_size=(self.world_size, self.world_size),
                                amount_of_bots=self.amount_of_bots,
                                vision_range=self.vision_range)
         self.action_space = spaces.Discrete(5)
         self.observation_space = spaces.Box(low=0,
-                                            high=5,
-                                            shape=(
-                                                self.vision_range * 2 + 1,
-                                                self.vision_range * 2 + 1,
-                                                amount_of_bots),
-                                            dtype=np.int)
+                                            high=1.,
+                                            shape=(amount_of_bots,
+                                                   self.vision_range * 2 + 1,
+                                                   self.vision_range * 2 + 1),
+                                            dtype=np.float)
 
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
@@ -38,7 +38,8 @@ class CommunicateEnv(gym.Env):
 
     def reset(self):
         del self.pygame
-        self.pygame = PyGame2D(world_size=(self.world_size, self.world_size),
+        self.pygame = PyGame2D(world_id=self.world_id,
+                               world_size=(self.world_size, self.world_size),
                                amount_of_bots=self.amount_of_bots,
                                vision_range=self.vision_range)
         obs = self.pygame.observe()

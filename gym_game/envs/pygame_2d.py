@@ -2,8 +2,9 @@ import ast
 
 import cv2
 import numpy as np
-import queue
 from colorhash import ColorHash
+
+from image_processing.improc import vconcat_resize_min, hconcat_resize_min, add_text
 
 action_to_move = {0: "stay",
                   1: "up",
@@ -37,6 +38,8 @@ class PyGame2D:
         self.world_id = world_id
         self.amount_of_bots = amount_of_bots
         self.world_static = empty_room_world(world_size)
+        # Padding so vision is for filled outside borders
+        self.world_static = np.pad(self.world_static, vision_range + 1, constant_values=1.)
         self.bot_vision_range = vision_range
 
         # Init goal positions
@@ -56,6 +59,10 @@ class PyGame2D:
         self.goal_reward = 250
         self.move_reward = -1
         self.stay_reward = -0.5
+
+        # Mini game:
+        self.step_out_of_goal_reward = -250
+        self.reached_a_goal = False
 
         # Saved variables
         self.reward = [0 for _ in range(amount_of_bots)]
@@ -121,6 +128,11 @@ class PyGame2D:
                 # add goal reached:
                 self.goal_map[str(bot.position())] = True
                 self.reward[i] += self.goal_reward
+                self.reached_a_goal = True
+
+            # Check if we step out of goal:
+            # if self.reached_a_goal and str(bot.position()) not in self.goal_map:
+            #     self.reward[i] += self.step_out_of_goal_reward
 
             # Compute action cost / reward:
             self.reward[i] += self.compute_action_reward(action_to_move[self.last_actions[i]])
@@ -138,27 +150,34 @@ class PyGame2D:
 
     def observe(self):
         # 1. If bots are in vision, copy share information
+        obs = []
         for bot in self.bots:
-            bot.do_observation(self.bots)
-        return 0
+            local_bot_obs = bot.do_observation(self.bots)
+            obs.append(local_bot_obs)
+        obs = np.stack(obs, axis=0)
+        return obs
 
     def view(self):
         # Render the view.
         canvas_gray = np.copy(self.world_static)
         canvas_gray *= 255
+        # invert to make solid black and free space white
         canvas_gray = 255 - canvas_gray
         canvas_color = np.stack((canvas_gray,) * 3, axis=-1).astype(np.uint8)
         # Draw goals first:
         for goal_point_str in self.goal_map.keys():
             goal_p = ast.literal_eval(goal_point_str)
-            canvas_color[goal_p[0], goal_p[1]] = (0, 255, 0)
+            canvas_color[goal_p[1], goal_p[0]] = (0, 255, 0)
 
         list_of_local_obs = []
         # Draw bots after:
         for i, bot in enumerate(self.bots):
             color = ColorHash(i * 10)
-            canvas_color[bot.x, bot.y] = color.rgb
-            list_of_local_obs.append(bot.vertically_combined_local_observations())
+            canvas_color[bot.y, bot.x] = color.rgb
+            list_of_local_obs.append(bot.get_view_color().astype(np.uint8))
+
+        # invert to make solid black and free space white
+
         return canvas_color.astype(np.uint8), list_of_local_obs
 
     def check_for_bot_crash(self, bot, dynamic_crash_map, verbose=False):
@@ -187,13 +206,16 @@ class Robot:
         self.trail = []
         self.vision_range = vision_range
 
+        # Check if we want to pad here or do it later:
         self.world_map = world
+        # self.world_map_padded = np.pad(self.world_map, vision_range, constant_values=1.)
         self.world_size = world.shape[:2]
         self.global_goal_trajectory = np.zeros(world.shape[:2])
 
         self.local_observations = np.zeros((vision_range * 2 + 1, vision_range * 2 + 1))  # Local map
         self.local_dynamic_tracking = np.zeros((vision_range * 2 + 1, vision_range * 2 + 1))
         self.local_goal_trajectory = np.zeros((vision_range * 2 + 1, vision_range * 2 + 1))
+        self.last_action = "stay"
 
         self.place_at_random_position()
         for i in range(trail_length):
@@ -207,13 +229,14 @@ class Robot:
         # adding trail before overwriting pos:
         self.add_trail(self.x, self.y)
         if action == "up":
-            self.y += 1
-        elif action == "down":
             self.y -= 1
+        elif action == "down":
+            self.y += 1
         elif action == "left":
             self.x -= 1
         elif action == "right":
             self.x += 1
+        self.last_action = action
 
     def add_trail(self, x, y):
         del self.trail[0]
@@ -224,30 +247,61 @@ class Robot:
 
     def do_observation(self, dynamic_objects):
         # Static local observations
-        # TODO:: Not taking into account that some might be close to border
-        self.local_observations = self.world_map[
-                                  self.x - self.vision_range: self.x + self.vision_range + 1,
-                                  self.y - self.vision_range: self.y + self.vision_range + 1
-                                  ]
+        self.local_observations = np.copy(self.world_map[
+                                          self.y - self.vision_range: self.y + self.vision_range + 1,
+                                          self.x - self.vision_range: self.x + self.vision_range + 1
+                                          ])
 
         w, h = self.local_observations.shape[:2]
         # Add the dynamic objects:
         for do in dynamic_objects:
-            if do.id == self.id:
-                continue
             x, y = do.position()
             lx, ly = (x - self.x) + vision_range, (y - self.y) + vision_range
-            if 0 <= lx <= w and 0 <= ly <= h:
-                self.local_observations[lx, ly] = 0.5
+            if 0 <= lx < w and 0 <= ly < h:
+                if do.id == self.id and self.local_observations[lx, ly] != 0.5:
+                    self.local_observations[lx, ly] = 0.75
+                else:
+                    self.local_observations[lx, ly] = 0.5
         debug = 0
-        return self.local_observations, self.local_dynamic_tracking, self.local_goal_trajectory
+        return self.local_observations  # , self.local_dynamic_tracking, self.local_goal_trajectory
 
-    def vertically_combined_local_observations(self):
-        return np.vstack((self.local_observations, self.local_dynamic_tracking, self.local_goal_trajectory))
+    def vertically_combined_local_observations(self, invert_colors=False):
+        # Pad all imaged to separate them:
+        list_to_resize = [np.pad(img, 1, constant_values=0.5) for img in
+                          [self.local_observations, self.local_dynamic_tracking, self.local_goal_trajectory]]
+        if invert_colors:
+            list_to_resize = [1. - img for img in list_to_resize]
+        return vconcat_resize_min(list_to_resize, cv2.INTER_NEAREST)
+
+    def get_view_color(self):
+        # Invert color:
+        local_observations_color = 1. - self.local_observations
+        local_dynamic_tracking_color = 1. - self.local_dynamic_tracking
+        local_goal_trajectory_color = 1. - self.local_goal_trajectory
+
+        # Convert to colors:
+        local_observations_color = cv2.cvtColor((local_observations_color * 255).astype(np.uint8), cv2.COLOR_GRAY2RGB)
+        local_dynamic_tracking_color = cv2.cvtColor((local_dynamic_tracking_color * 255).astype(np.uint8),
+                                                    cv2.COLOR_GRAY2RGB)
+        local_goal_trajectory_color = cv2.cvtColor((local_goal_trajectory_color * 255).astype(np.uint8),
+                                                   cv2.COLOR_GRAY2RGB)
+
+        # Add special view Colors:
+        local_observations_color[vision_range, vision_range] = (0, 0, 255)
+        # Writing action taken:
+        add_text(local_goal_trajectory_color, self.last_action, anchor=(0, 10), fontScale=0.2, thickness=1)
+        # Pad to separate views:
+        pad_color = (100, 100, 100)
+        if self.world_map[self.x, self.y] == 1 or self.local_observations[vision_range, vision_range] != 0.75:
+            pad_color = (0, 0, 255)
+        list_to_resize = [local_observations_color, local_dynamic_tracking_color, local_goal_trajectory_color]
+        list_to_resize = [cv2.copyMakeBorder(img, top=1, bottom=1, left=1, right=1, borderType=cv2.BORDER_CONSTANT,
+                                             value=pad_color) for img in list_to_resize]
+        return vconcat_resize_min(list_to_resize, cv2.INTER_NEAREST)
 
 
 if __name__ == '__main__':
-    seed = 0
+    seed = 3
     np.random.seed(seed)
     world_size = (40, 40)
     canvas_size = (600, 600)
@@ -278,9 +332,16 @@ if __name__ == '__main__':
               f"done: {done}\n"
               f"notes: {str(notes)}\n\n")
         world, list_of_local_views = game.view()
-        world_scaled = cv2.resize(world, (0, 0), fx=canvas_size[0] / world_size[0], fy=canvas_size[1] / world_size[1])
+        world_scaled = cv2.resize(world, (0, 0), fx=canvas_size[0] / world_size[0], fy=canvas_size[1] / world_size[1],
+                                  interpolation=cv2.INTER_NEAREST)
         cv2.imshow("world", world_scaled)
-        for i, img in enumerate(list_of_local_views):
-            cv2.imshow(i, img)
+        list_of_local_views_resized = []
+        for i, local_view in enumerate(list_of_local_views):
+            local_view_resized = cv2.resize(local_view, dsize=(0, 0), fx=5, fy=5, interpolation=cv2.INTER_NEAREST)
+            list_of_local_views_resized.append(local_view_resized)
+        local_view_combined = hconcat_resize_min(list_of_local_views_resized, cv2.INTER_NEAREST)
+        # img = np.pad(img, pad_width=2, constant_values=0.5)
+        cv2.imshow("Local view combined", local_view_combined)
+
         if cv2.waitKey(0):
             cv2.destroyAllWindows()

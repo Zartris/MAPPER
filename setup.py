@@ -7,6 +7,9 @@ setup(
         'gym',
         'opencv-python',
         'colorhash',
-        'numpy'
+        'numpy',
+        'tensorboardX',
+        'torch',
+
     ]
 )

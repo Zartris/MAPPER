@@ -5,6 +5,7 @@ from collections import deque
 from functools import partial
 from pathlib import Path
 
+import gym
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
@@ -15,20 +16,21 @@ from DRL.agent.multi_agent import MultiAgent
 from DRL.model.twin_ac_model import Actor
 from DRL.replay_buffers.replay_buffer import ReplayBuffer
 from utils import log
+from gym_game.envs import CommunicateEnv
 
 
-def eval_agent(brain_name, agent, n_episodes=1000, max_t=1000, print_every=100, slow_and_pretty=True):
+def eval_agent(game_env, agent, n_episodes=1000, max_t=1000, print_every=100, slow_and_pretty=True):
     scores_deque = deque(maxlen=print_every)
     scores = []
     for i_episode in range(1, n_episodes + 1):
-        env_info = env.reset(train_mode=not slow_and_pretty)[brain_name]  # reset the environment
+        env_info = game_env.reset(train_mode=not slow_and_pretty)[brain_name]  # reset the environment
         states = env_info.vector_observations  # get the current state (for each agent)
         agent.reset()  # Reset all agents
         score = np.zeros(num_agents)
         start_time = time.time()
         while True:
             actions = agent.act(states, add_noise=False)  # select an action (for each agent)
-            env_info = env.step(actions)[brain_name]  # send all actions to tne environment
+            env_info = game_env.step(actions)[brain_name]  # send all actions to tne environment
             next_states = env_info.vector_observations  # get next state (for each agent)
             dones = env_info.local_done  # see if episode finished
             score += env_info.rewards  # update the score (for each agent)
@@ -55,7 +57,7 @@ def eval_agent(brain_name, agent, n_episodes=1000, max_t=1000, print_every=100, 
     return scores
 
 
-def train_agent(brain_name, agent, action_size, n_episodes=1000, max_t=1000, file="", logging_folder="",
+def train_agent(game_env, agent, action_size, n_episodes=1000, max_t=1000, file="", logging_folder="",
                 log_every=5,
                 print_every=100, warmups=0, slow_and_pretty=False):
     writer = SummaryWriter(str(logging_folder))
@@ -65,7 +67,7 @@ def train_agent(brain_name, agent, action_size, n_episodes=1000, max_t=1000, fil
     logging_buffer = ""
     # Full buffer with random moves:
     for ep in range(1, warmups + 1):
-        env_info = env.reset(train_mode=not slow_and_pretty)[brain_name]  # reset the environment
+        env_info = game_env.reset(train_mode=not slow_and_pretty)  # reset the environment
         states = env_info.vector_observations  # get the current state (for each agent)
         for t in range(max_t):
             actions = np.random.randn(num_agents, action_size)  # select an action (for each agent)
@@ -81,7 +83,7 @@ def train_agent(brain_name, agent, action_size, n_episodes=1000, max_t=1000, fil
     current_best = 0.1
     beaten = False
     for i_episode in range(1, n_episodes + 1):
-        env_info = env.reset(train_mode=not slow_and_pretty)[brain_name]  # reset the environment
+        env_info = game_env.reset(train_mode=not slow_and_pretty)[brain_name]  # reset the environment
         states = env_info.vector_observations  # get the current state (for each agent)
         agent.reset()  # Reset all agents
         score = np.zeros(num_agents)
@@ -89,7 +91,7 @@ def train_agent(brain_name, agent, action_size, n_episodes=1000, max_t=1000, fil
         # for t in range(max_t):
         while True:
             actions = agent.act(states)  # select an action (for each agent)
-            env_info = env.step(actions)[brain_name]  # send all actions to tne environment
+            env_info = game_env.step(actions)[brain_name]  # send all actions to tne environment
             next_states = env_info.vector_observations  # get next state (for each agent)
             rewards = env_info.rewards  # get reward (for each agent)
             dones = env_info.local_done  # see if episode finished
@@ -161,11 +163,12 @@ if __name__ == '__main__':
     parser.add_argument("--steps_before_train", default=4, type=int)  # Steps taken between train calls.
     parser.add_argument("--train_iterations", default=2,
                         type=int)  # number of batches trained on per train call [Tried, 1, 2]
-    parser.add_argument("--result_folder", default=os.path.join(os.getcwd(), "results"))
+    parser.add_argument("--result_folder", default=os.path.join(os.getcwd(), "DRL/results"))
     parser.add_argument("--load_model_path", default="")  # If should load model: if "" don't load anything
     parser.add_argument("--eval", default=False, type=bool)  # If we only want to evaluate a model.
     parser.add_argument("--eval_load_best", default=False, type=bool)  # load best model (used by reviewers)
     parser.add_argument("--slow_and_pretty", default=False, type=bool)  # If we only want to evaluate a model.
+    parser.add_argument("--number_of_agents", default=5, type=int)  # How many agents in the environment
 
     args = parser.parse_args()
     # Logging data:
@@ -187,29 +190,24 @@ if __name__ == '__main__':
 
     log.log_hyper_para(file=model_test_file, args=args)
 
-    gamefile = Path(os.getcwd(), 'Tennis', 'Tennis.exe')
-    env = UnityEnvironment(file_name=str(gamefile), seed=args.seed)
-    # get the default brain
-    brain_name = env.brain_names[0]
-    brain = env.brains[brain_name]
+    env = CommunicateEnv(world_id=1, amount_of_bots=10)
 
     #### 2. Examine the State and Action Spaces
-    # reset the environment
-    env_info = env.reset(train_mode=args.slow_and_pretty)[brain_name]
-
     # number of agents
-    num_agents = len(env_info.agents)
+    num_agents = args.number_of_agents
     print('Number of agents:', num_agents)
 
     # size of each action
-    action_size = brain.vector_action_space_size
-    action_val_high = 1
-    action_val_low = -1
+    action_size = 1 # Dimension of each action
+    action_val_high = 4
+    action_val_low = 0
     print('Size of each action:', action_size)
 
     # examine the state space
-    states = env_info.vector_observations
-    state_size = states.shape[1]
+    # reset the environment
+    obs = env.reset()
+    states = obs
+    state_size = states.shape[1:]
     print('There are {} agents. Each observes a state with length: {}'.format(states.shape[0], state_size))
     print('The state for the first agent looks like:', states[0])
 

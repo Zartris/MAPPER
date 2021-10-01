@@ -256,7 +256,7 @@ class Robot:
         # Add the dynamic objects:
         for do in dynamic_objects:
             x, y = do.position()
-            lx, ly = (x - self.x) + vision_range, (y - self.y) + vision_range
+            lx, ly = (x - self.x) + self.vision_range, (y - self.y) + self.vision_range
             if 0 <= lx < w and 0 <= ly < h:
                 if do.id == self.id and self.local_observations[lx, ly] != 0.5:
                     self.local_observations[lx, ly] = 0.75

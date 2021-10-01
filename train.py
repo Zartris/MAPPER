@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
-# from unityagents import UnityEnvironment
+from unityagents import UnityEnvironment
 
 from DRL.agent.MA_TD3_agent import MATD3Agent
 from DRL.agent.multi_agent import MultiAgent

@@ -67,11 +67,11 @@ def train_agent(game_env, agent, action_size, n_episodes=1000, max_t=1000, file=
     logging_buffer = ""
     # Full buffer with random moves:
     for ep in range(1, warmups + 1):
-        env_info = game_env.reset(train_mode=not slow_and_pretty)  # reset the environment
+        env_info = game_env.reset()  # reset the environment
         states = env_info.get_color_obs()  # get the current state (for each agent)
         for t in range(max_t):
             actions = np.random.randn(num_agents, action_size)  # select an action (for each agent)
-            actions = np.clip(actions, -1, 1)  # all actions between -1 and 1
+            actions = np.clip(actions, 0, 4)  # all actions between -1 and 1
             env_info = env.step(actions)  # send all actions to the environment
             next_states = env_info.obs  # get next state (for each agent)
             rewards = env_info.rewards  # get reward (for each agent)
@@ -104,6 +104,8 @@ def train_agent(game_env, agent, action_size, n_episodes=1000, max_t=1000, file=
             steps += 1
             if np.any(dones):
                 break
+            if steps >= max_t:
+                break
         duration = time.time() - start_time
         mean_score = np.mean(score)
         min_score = min(score)
@@ -120,7 +122,7 @@ def train_agent(game_env, agent, action_size, n_episodes=1000, max_t=1000, file=
                    '\tMax:{:.2f}'
                    '\tDuration:{:.2f},'
                    '\tStepCount: {:.2f} ').format(i_episode, avg_score, mean_score, min_score, max_score, duration,
-                                                 steps)
+                                                  steps)
         logging_buffer += "\t" + log_str + "\n"
         print("\r" + log_str,
               end="")
@@ -150,7 +152,7 @@ def train_agent(game_env, agent, action_size, n_episodes=1000, max_t=1000, file=
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", default=0, type=int)  # The seed for testing
-    parser.add_argument("--max_timesteps", default=2000, type=int)  # Max time per episode
+    parser.add_argument("--max_timesteps", default=50, type=int)  # Max time per episode
     parser.add_argument("--episodes", default=4000, type=int)  # Number of episodes to train for
     parser.add_argument("--batch_size", default=256, type=int)  # Batch size for training [Tried, 256, 512, 1024]
     parser.add_argument("--buffer_size", default=int(1e5), type=int)  # Batch size for training [Tried, 1e5, 1e6, 2**20]
@@ -166,7 +168,7 @@ if __name__ == '__main__':
     parser.add_argument("--noise_reduction_factor", default=0.999)  # Reducing the noise [Tried, 0.99, 0.999]
     parser.add_argument("--noise_scalar_init", default=2)  # initialise noise at start of each episode [Tried, 1, 2]
     parser.add_argument("--train_delay", default=2, type=int)  # Frequency of delayed policy updates
-    parser.add_argument("--steps_before_train", default=20, type=int)  # Steps taken between train calls.
+    parser.add_argument("--steps_before_train", default=4, type=int)  # Steps taken between train calls.
     parser.add_argument("--train_iterations", default=2,
                         type=int)  # number of batches trained on per train call [Tried, 1, 2]
     parser.add_argument("--result_folder", default=os.path.join(os.getcwd(), "DRL/results"))
@@ -174,7 +176,7 @@ if __name__ == '__main__':
     parser.add_argument("--eval", default=False, type=bool)  # If we only want to evaluate a model.
     parser.add_argument("--eval_load_best", default=False, type=bool)  # load best model (used by reviewers)
     parser.add_argument("--slow_and_pretty", default=True, type=bool)  # If we only want to evaluate a model.
-    parser.add_argument("--number_of_agents", default=5, type=int)  # How many agents in the environment
+    parser.add_argument("--number_of_agents", default=2, type=int)  # How many agents in the environment
 
     args = parser.parse_args()
     # Logging data:
@@ -233,26 +235,26 @@ if __name__ == '__main__':
                          fc2_units=128)
     for i in range(1, num_agents + 1):
         agents.append(MATD3Agent("MATD3Agent" + str(i),
-                                     actor_func=actor_func,
-                                     state_size=state_size,
-                                     replay_buffer_func=replay_buffer_func,
-                                     action_size=action_size,
-                                     action_val_high=action_val_high,
-                                     action_val_low=action_val_low,
-                                     save_path=model_dir,
-                                     seed=args.seed,
-                                     train_delay=args.train_delay,
-                                     steps_before_train=args.steps_before_train,
-                                     train_iterations=args.train_iterations,
-                                     discount=args.discount,
-                                     tau=args.tau,
-                                     lr_actor=args.lr_actor,
-                                     lr_critic=args.lr_critic,
-                                     policy_noise=args.policy_noise,
-                                     noise_clip=args.noise_clip,
-                                     exploration_noise=args.exploration_noise,
-                                     noise_reduction_factor=args.noise_reduction_factor,
-                                     noise_scalar_init=args.noise_scalar_init))
+                                 actor_func=actor_func,
+                                 state_size=state_size,
+                                 replay_buffer_func=replay_buffer_func,
+                                 action_size=action_size,
+                                 action_val_high=action_val_high,
+                                 action_val_low=action_val_low,
+                                 save_path=model_dir,
+                                 seed=args.seed,
+                                 train_delay=args.train_delay,
+                                 steps_before_train=args.steps_before_train,
+                                 train_iterations=args.train_iterations,
+                                 discount=args.discount,
+                                 tau=args.tau,
+                                 lr_actor=args.lr_actor,
+                                 lr_critic=args.lr_critic,
+                                 policy_noise=args.policy_noise,
+                                 noise_clip=args.noise_clip,
+                                 exploration_noise=args.exploration_noise,
+                                 noise_reduction_factor=args.noise_reduction_factor,
+                                 noise_scalar_init=args.noise_scalar_init))
     agent = MultiAgent("MultiAgent",
                        agents=agents,
                        save_path=model_dir,

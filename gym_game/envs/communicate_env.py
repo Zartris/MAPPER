@@ -13,7 +13,7 @@ class CommunicateEnv(gym.Env):
         self.seed()
         self.world_id = world_id
         self.amount_of_bots = amount_of_bots
-        self.world_size = 40
+        self.world_size = 20
         self.canvas_size = 600
         self.vision_range = 10
         self.pygame = PyGame2D(world_id=world_id,

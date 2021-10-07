@@ -6,6 +6,25 @@ from colorhash import ColorHash
 
 from image_processing.improc import vconcat_resize_min, hconcat_resize_min, add_text
 
+
+class EnvInfo:
+    def __init__(self, obs, rewards=[], local_done=[], notes={}):
+        self.obs = obs
+        self.rewards = rewards
+        self.local_done = local_done
+        self.notes = notes
+
+    def get_color_obs(self):
+        obs = np.array(self.obs)
+        # obs = np.expand_dims(obs, 1)
+        obs = np.stack((obs,) * 3, axis=1)
+        return obs
+
+    def get_obs(self):
+        obs = np.array(self.obs)
+        return np.expand_dims(obs, 1)
+
+
 action_to_move = {0: "stay",
                   1: "up",
                   2: "down",
@@ -55,10 +74,10 @@ class PyGame2D:
         self.crashed_static = False
         self.dynamic_crash_map = {}
         # Reward weights:
-        self.crash_reward = -500
-        self.goal_reward = 250
-        self.move_reward = -1
-        self.stay_reward = -0.5
+        self.crash_reward = -50
+        self.goal_reward = 25
+        self.move_reward = -0.1
+        self.stay_reward = -0.1
 
         # Mini game:
         self.step_out_of_goal_reward = -250
@@ -88,9 +107,10 @@ class PyGame2D:
             self.goal_map[str(position)] = False  # Visited
 
     def actions(self, actions):
+        actions = actions.squeeze().astype(np.int8)
         self.last_actions = actions
-        for i, bot in enumerate(self.bots):
-            bot.action(action_to_move[actions[i]])
+        for action, bot in zip(actions, self.bots):
+            bot.action(action_to_move[action])
 
     def compute_action_reward(self, action):
         if action == "up":
@@ -109,7 +129,9 @@ class PyGame2D:
         Computes reward for each bot
         :return:
         """
-        self.reward = [0 for _ in range(amount_of_bots)]
+        # Reset bot rewards:
+        for bot in self.bots:
+            bot.reward = 0
 
         # Building crash map more memory used, but faster to compute:
         self.dynamic_crash_map = {}
@@ -119,40 +141,39 @@ class PyGame2D:
             else:
                 self.dynamic_crash_map[str(bot.position())] = [bot.id]
 
-        for i, bot in enumerate(self.bots):
+        for action, bot in zip(self.last_actions, self.bots):
             # Evaluate for crash
-            self.reward[i] += self.check_for_bot_crash(bot, self.dynamic_crash_map, verbose=True)
+            bot.reward += self.check_for_bot_crash(bot, self.dynamic_crash_map, verbose=True)
 
             # Check if we reached a new goal:
             if str(bot.position()) in self.goal_map and not self.goal_map[str(bot.position())]:
                 # add goal reached:
                 self.goal_map[str(bot.position())] = True
-                self.reward[i] += self.goal_reward
-                self.reached_a_goal = True
-
-            # Check if we step out of goal:
-            # if self.reached_a_goal and str(bot.position()) not in self.goal_map:
-            #     self.reward[i] += self.step_out_of_goal_reward
+                bot.reward += self.goal_reward
 
             # Compute action cost / reward:
-            self.reward[i] += self.compute_action_reward(action_to_move[self.last_actions[i]])
+            bot.reward += self.compute_action_reward(action_to_move[action])
+
+        self.reward = [bot.reward for bot in self.bots]
         return self.reward
 
     def is_done(self):
-        done = False
         # Cases where it is done:
         # 1. One of the bot crashed
-        done = done or self.crashed_static or self.crashed_dynamic
+        dones = [bot.is_done for bot in self.bots]
         # 2. all targets is reached
+        goals_hit = list(self.goal_map.values())
+        if np.all(goals_hit):
+            dones = [True for _ in self.bots]
         # 3. Times up.
         # 4. .....
-        return done
+        return dones
 
     def observe(self):
         # 1. If bots are in vision, copy share information
         obs = []
         for bot in self.bots:
-            local_bot_obs = bot.do_observation(self.bots)
+            local_bot_obs = bot.do_observation(self.bots, self.goal_map)
             obs.append(local_bot_obs)
         obs = np.stack(obs, axis=0)
         return obs
@@ -189,20 +210,23 @@ class PyGame2D:
                     f"Robot_{bot.id} crashed into another bot [{str(dynamic_crash_map[str(bot.position())])}]")
             reward += self.crash_reward
             self.crashed_dynamic = True
+            bot.is_done = True
         if self.world_static[bot.x, bot.y] == 1.:
             if verbose:
                 print(f"Crash in world_id: {self.world_id}, robot_{bot.id} crashed into static environment")
             reward += self.crash_reward
             self.crashed_static = True
+            bot.is_done = True
         return reward
 
 
 class Robot:
-    def __init__(self, id, world, vision_range, trail_length=3):
+    def __init__(self, id, world, vision_range, trail_length=5):
         self.id = id
         self.x = 0
         self.y = 0
         self.trail_length = trail_length
+        self.trail_decay = 1 / trail_length
         self.trail = []
         self.vision_range = vision_range
 
@@ -220,6 +244,10 @@ class Robot:
         self.place_at_random_position()
         for i in range(trail_length):
             self.trail.append(self.position())
+
+        # Holding state:
+        self.is_done = False
+        self.reward = 0
 
     def place_at_random_position(self):
         self.x, self.y = get_random_free_position(self.world_map, self.world_size)
@@ -245,25 +273,44 @@ class Robot:
     def position(self):
         return self.x, self.y
 
-    def do_observation(self, dynamic_objects):
+    def do_observation(self, dynamic_objects, goal_map: dict):
         # Static local observations
         self.local_observations = np.copy(self.world_map[
                                           self.y - self.vision_range: self.y + self.vision_range + 1,
                                           self.x - self.vision_range: self.x + self.vision_range + 1
                                           ])
+        # Shift according to last action:
+        self.local_dynamic_tracking = self.roll_map_based_on_action(self.local_dynamic_tracking)
+        # Decay one timestep
+        self.local_dynamic_tracking = np.clip(self.local_dynamic_tracking - self.trail_decay, 0., 1.)
+
+        self.local_goal_trajectory = np.zeros(self.local_goal_trajectory.shape)  # Clear last view
 
         w, h = self.local_observations.shape[:2]
         # Add the dynamic objects:
         for do in dynamic_objects:
             x, y = do.position()
-            lx, ly = (x - self.x) + self.vision_range, (y - self.y) + self.vision_range
-            if 0 <= lx < w and 0 <= ly < h:
+            lx, ly, inside_range = self.is_inside_vision_range(x, y, w, h)
+            if inside_range:
                 if do.id == self.id and self.local_observations[lx, ly] != 0.5:
-                    self.local_observations[lx, ly] = 0.75
+                    self.local_observations[ly, lx] = 0.75
                 else:
-                    self.local_observations[lx, ly] = 0.5
-        debug = 0
-        return self.local_observations  # , self.local_dynamic_tracking, self.local_goal_trajectory
+                    self.local_observations[ly, lx] = 0.5
+                # Dynamic trails
+                self.local_dynamic_tracking[ly, lx] = 1.0
+        # Goal tracking
+        for goal_point_str, visit in goal_map.items():
+            if not visit:
+                goal_p = ast.literal_eval(goal_point_str)
+                x, y = goal_p
+                lx, ly, inside_range = self.is_inside_vision_range(x, y, w, h)
+                if inside_range:
+                    self.local_goal_trajectory[ly, lx] = 1.
+        return self.local_observations, self.local_dynamic_tracking, self.local_goal_trajectory
+
+    def is_inside_vision_range(self, x, y, w, h):
+        lx, ly = (x - self.x) + self.vision_range, (y - self.y) + self.vision_range
+        return lx, ly, 0 <= lx < w and 0 <= ly < h
 
     def vertically_combined_local_observations(self, invert_colors=False):
         # Pad all imaged to separate them:
@@ -285,19 +332,36 @@ class Robot:
                                                     cv2.COLOR_GRAY2RGB)
         local_goal_trajectory_color = cv2.cvtColor((local_goal_trajectory_color * 255).astype(np.uint8),
                                                    cv2.COLOR_GRAY2RGB)
-
+        move_text_view = (np.ones((local_goal_trajectory_color.shape)) * 255).astype(np.uint8)
         # Add special view Colors:
-        local_observations_color[vision_range, vision_range] = (0, 0, 255)
+        local_observations_color[self.vision_range, self.vision_range] = (0, 0, 255)
         # Writing action taken:
-        add_text(local_goal_trajectory_color, self.last_action, anchor=(0, 10), fontScale=0.2, thickness=1)
+        add_text(move_text_view, self.last_action, anchor=(0, 10), fontScale=0.2, thickness=1)
         # Pad to separate views:
         pad_color = (100, 100, 100)
-        if self.world_map[self.x, self.y] == 1 or self.local_observations[vision_range, vision_range] != 0.75:
+        if self.world_map[self.x, self.y] == 1 or self.local_observations[self.vision_range, self.vision_range] != 0.75:
             pad_color = (0, 0, 255)
-        list_to_resize = [local_observations_color, local_dynamic_tracking_color, local_goal_trajectory_color]
+        list_to_resize = [local_observations_color, local_dynamic_tracking_color, local_goal_trajectory_color,
+                          move_text_view]
         list_to_resize = [cv2.copyMakeBorder(img, top=1, bottom=1, left=1, right=1, borderType=cv2.BORDER_CONSTANT,
                                              value=pad_color) for img in list_to_resize]
         return vconcat_resize_min(list_to_resize, cv2.INTER_NEAREST)
+
+    def roll_map_based_on_action(self, map):
+        new_map = np.copy(map)
+        if self.last_action == "up":
+            new_map = np.roll(new_map, 1, axis=0)
+            new_map[0, :] = 0
+        elif self.last_action == "down":
+            new_map = np.roll(new_map, -1, axis=0)
+            new_map[-1, :] = 0
+        elif self.last_action == "left":
+            new_map = np.roll(new_map, 1, axis=1)
+            new_map[:, 0] = 0
+        elif self.last_action == "right":
+            new_map = np.roll(new_map, -1, axis=1)
+            new_map[:, -1] = 0
+        return new_map
 
 
 if __name__ == '__main__':
@@ -311,12 +375,12 @@ if __name__ == '__main__':
     game = PyGame2D(1, world_size, amount_of_bots, vision_range)
 
 
-    def step(pygame, actions):
-        pygame.actions(actions)
-        obs = pygame.observe()
-        reward = pygame.evaluate()
-        done = pygame.is_done()
-        return obs, reward, done, {}
+    def step(game, actions):
+        game.actions(actions)
+        obs = game.observe()  # list
+        reward = game.evaluate()
+        dones = game.is_done()
+        return EnvInfo(obs, reward, dones, {})
 
 
     running = True
@@ -324,8 +388,8 @@ if __name__ == '__main__':
     while running:
         steps += 1
         actions = [np.random.randint(0, 5) for _ in range(amount_of_bots)]
-        obs, reward, done, notes = step(game, actions)
-        running = not done
+        obs, reward, done, notes = step(game, np.array(actions))
+        running = not np.any(done)
         print(f"steps: {steps}\n"
               f"obs: {obs}\n"
               f"reward: {reward}\n"

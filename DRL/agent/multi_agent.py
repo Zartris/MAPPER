@@ -1,3 +1,5 @@
+import numpy as np
+
 from DRL.agent.AgentBase import AgentBase
 from DRL.utils import *
 
@@ -24,7 +26,7 @@ class MultiAgent(AgentBase):
         for idx, (agent, state, action, reward, next_state, done) in enumerate(
                 zip(self.agents, states, actions, rewards, next_states, dones)):
             # self.add_to_memory(state, action, reward, next_state, done, agent_idx=idx)
-            agent.step(state, action, reward, next_state, done)
+            agent.step(np.expand_dims(state, 0), action, reward, np.expand_dims(next_state, 0), done)
         # for agent in self.agents:
         #     agent.step(self.shared_memory)
 

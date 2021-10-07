@@ -29,7 +29,9 @@ class Actor(nn.Module):
         """
         super(Actor, self).__init__()
         self.seed = torch.manual_seed(seed)
-        self.fc1 = nn.Linear(state_size, fc1_units)
+        self.flatten = nn.Flatten()
+
+        self.fc1 = nn.Linear(3*21*21, fc1_units)
         self.bn1 = nn.BatchNorm1d(fc1_units)
         self.fc2 = nn.Linear(fc1_units, fc2_units)
         self.fc3 = nn.Linear(fc2_units, action_size)
@@ -43,7 +45,8 @@ class Actor(nn.Module):
     def forward(self, state):
         """Build an actor (policy) network that maps states -> actions."""
         # state = state.unsqueeze(0)
-        x = F.relu(self.fc1(state))
+        state2 = self.flatten(state)
+        x = F.relu(self.fc1(state2))
         x = F.relu(self.fc2(x))
         return torch.tanh(self.fc3(x))
 
@@ -89,11 +92,14 @@ class ActorConv(nn.Module):
         self.seed = torch.manual_seed(seed)
         self.conv_backbone = resnet_backbone_conv("resnet_18")
         # Freeze the parameters
+        out = 0
         for child in self.conv_backbone.children():
+            if hasattr(child, "out_channels"):
+                out = child.out_channels
             for param in child.parameters():
                 param.requires_grad = False
-
-        self.fc1 = nn.Linear(state_size, fc1_units)
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(512, fc1_units)
         self.bn1 = nn.BatchNorm1d(fc1_units)
         self.fc2 = nn.Linear(fc1_units, fc2_units)
         self.fc3 = nn.Linear(fc2_units, action_size)
@@ -106,8 +112,9 @@ class ActorConv(nn.Module):
 
     def forward(self, state):
         """Build an actor (policy) network that maps states -> actions."""
-        # state = state.unsqueeze(0)
-        x = F.relu(self.fc1(state))
+        # convert to rbg (3 channels)
+        x = self.conv_backbone(state)
+        x = F.relu(self.fc1(self.flatten(x)))
         x = F.relu(self.fc2(x))
         return torch.tanh(self.fc3(x))
 
@@ -128,7 +135,9 @@ class Critic(nn.Module):
         super(Critic, self).__init__()
         self.seed = torch.manual_seed(seed)
         self.use_batch_norm = use_batch_norm
-        self.fcs1 = nn.Linear(state_size, fcs1_units)
+        self.flatten = nn.Flatten()
+
+        self.fcs1 = nn.Linear(3*21*21, fcs1_units)
         if use_batch_norm:
             self.bn1 = nn.BatchNorm1d(fcs1_units)
         self.fc2 = nn.Linear(fcs1_units + action_size, fc2_units)
@@ -142,6 +151,7 @@ class Critic(nn.Module):
 
     def forward(self, state, action):
         """Build a critic (value) network that maps (state, action) pairs -> Q-values."""
+        state = self.flatten(state)
         xs = self.fcs1(state)
         if self.use_batch_norm:
             xs = self.bn1(xs)
@@ -211,6 +221,7 @@ class TwinCritic(nn.Module):
 
     def forward(self, state, action):
         """Build a critic (value) network that maps (state, action) pairs -> Q-values."""
+        state = self.flatten(state)
         sa = torch.cat((state, action), dim=1)
         q1 = self.critic1(sa)
         q2 = self.critic2(sa)
@@ -218,6 +229,7 @@ class TwinCritic(nn.Module):
 
     def Q1(self, state, action):
         """ To get only Q1 value"""
+        state = self.flatten(state)
         sa = torch.cat((state, action), dim=1)
         q1 = self.critic1(sa)
         return q1
@@ -239,6 +251,8 @@ class TwinCritic_simple(nn.Module):
         super(TwinCritic_simple, self).__init__()
         self.seed = torch.manual_seed(seed)
         self.use_batch_norm = use_batch_norm
+        self.flatten = nn.Flatten()
+
         # First Critic C1
         # All the layers (we need them as variables to reset each layer)
         # Add them into a Sequential function
@@ -259,12 +273,15 @@ class TwinCritic_simple(nn.Module):
 
     def forward(self, state, action):
         """Build a critic (value) network that maps (state, action) pairs -> Q-values."""
+        state = self.flatten(state)
+
         q1 = self.critic1(state, action)
         q2 = self.critic2(state, action)
         return q1, q2
 
     def Q1(self, state, action):
         """ To get only Q1 value"""
+        state = self.flatten(state)
         q1 = self.critic1(state, action)
         return q1
 
@@ -292,14 +309,15 @@ class TwinCriticConv_simple(nn.Module):
             for param in child.parameters():
                 param.requires_grad = False
 
+        self.flatten = nn.Flatten()
         # First Critic C1
         # All the layers (we need them as variables to reset each layer)
         # Add them into a Sequential function
-        self.critic1 = Critic(state_size, action_size, seed, fcs1_units=fc1_units, fc2_units=fc2_units,
+        self.critic1 = Critic(512, action_size, seed, fcs1_units=fc1_units, fc2_units=fc2_units,
                               use_batch_norm=use_batch_norm)
 
         # Second Critic C2 ( Have to be the same architecture)
-        self.critic2 = Critic(state_size, action_size, seed, fcs1_units=fc1_units, fc2_units=fc2_units,
+        self.critic2 = Critic(512, action_size, seed, fcs1_units=fc1_units, fc2_units=fc2_units,
                               use_batch_norm=use_batch_norm)
 
         self.reset_parameters()
@@ -313,6 +331,7 @@ class TwinCriticConv_simple(nn.Module):
     def forward(self, state, action):
         """Build a critic (value) network that maps (state, action) pairs -> Q-values."""
         xs = self.conv_backbone(state)
+        xs = self.flatten(xs)
         q1 = self.critic1(xs, action)
         q2 = self.critic2(xs, action)
         return q1, q2
@@ -320,5 +339,6 @@ class TwinCriticConv_simple(nn.Module):
     def Q1(self, state, action):
         """ To get only Q1 value"""
         xs = self.conv_backbone(state)
+        xs = self.flatten(xs)
         q1 = self.critic1(xs, action)
         return q1

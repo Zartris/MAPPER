@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from DRL.agent.AgentBase import AgentBase
-from DRL.model.twin_ac_model import TwinCritic_simple, TD3Actor
+from DRL.model.twin_ac_model import TwinCritic_simple, TD3Actor, TwinCriticConv_simple
 from DRL.replay_buffers.replay_buffer import ReplayBuffer
 from DRL.utils import *
 
@@ -115,6 +115,8 @@ class MATD3Agent(AgentBase):
     def act(self, states, add_noise=True):
         """Returns actions for given state as per current policy."""
         states = torch.from_numpy(states).float().to(self.device)
+        states.unsqueeze_(0)
+
         self.actor.eval()
         with torch.no_grad():
             actions = self.actor(states).cpu().data.numpy()
@@ -123,7 +125,21 @@ class MATD3Agent(AgentBase):
             actions += np.random.normal(0, self.action_val_high * self.exploration_noise,
                                         self.action_size) * self.noise_scalar
             self.noise_scalar *= self.noise_reduction_factor
-        return np.clip(actions, self.action_val_low, self.action_val_high)
+        return np.rint(np.clip(actions, self.action_val_low, self.action_val_high))
+
+    # def act(self, states, add_noise=True):
+    #     """Returns actions for given state as per current policy."""
+    #     states = torch.from_numpy(states).float().to(self.device)
+    #     states.unsqueeze_(0)
+    #     self.actor.eval()
+    #     with torch.no_grad():
+    #         actions = self.actor(states).cpu().data.numpy()
+    #     self.actor.train()
+    #     if add_noise:
+    #         actions += np.random.normal(0, self.action_val_high * self.exploration_noise,
+    #                                     self.action_size) * self.noise_scalar
+    #         self.noise_scalar *= self.noise_reduction_factor
+    #     return np.rint(np.clip(actions, self.action_val_low, self.action_val_high))
 
     def step(self, state, action, reward, next_state, done):
         """Save experience in replay memory, and use random sample from buffer to learn."""
@@ -273,18 +289,18 @@ class MATD3AgentConv(AgentBase):
         # Using Twin Critic Network (w/ Target Network), we are combining the two critics into the same network
         # Critic Network (w/ Target Network)
         if MATD3Agent.shared_twin_critic is None:
-            MATD3Agent.shared_twin_critic = TwinCritic_simple(state_size, action_size, self.seed, fc1_units=256,
+            MATD3Agent.shared_twin_critic = TwinCriticConv_simple(state_size, action_size, self.seed, fc1_units=256,
                                                               fc2_units=128,
                                                               use_batch_norm=False).to(
                 self.device)
         if MATD3Agent.shared_twin_critic_target is None:
-            MATD3Agent.shared_twin_critic_target = TwinCritic_simple(state_size, action_size, self.seed,
+            MATD3Agent.shared_twin_critic_target = TwinCriticConv_simple(state_size, action_size, self.seed,
                                                                      fc1_units=256,
                                                                      fc2_units=128, use_batch_norm=False).to(
                 self.device)
-            MATD3Agent.shared_twin_critic_target.load_state_dict(self.shared_twin_critic.state_dict())
+            MATD3Agent.shared_twin_critic_target.load_state_dict(MATD3Agent.shared_twin_critic.state_dict())
         if MATD3Agent.shared_twin_critic_optimizer is None:
-            MATD3Agent.shared_twin_critic_optimizer = optim.Adam(self.shared_twin_critic.parameters(),
+            MATD3Agent.shared_twin_critic_optimizer = optim.Adam(MATD3Agent.shared_twin_critic.parameters(),
                                                                  lr=lr_critic)
 
         self.shared_twin_critic = MATD3Agent.shared_twin_critic
@@ -319,6 +335,7 @@ class MATD3AgentConv(AgentBase):
     def act(self, states, add_noise=True):
         """Returns actions for given state as per current policy."""
         states = torch.from_numpy(states).float().to(self.device)
+        states.unsqueeze_(0)
         self.actor.eval()
         with torch.no_grad():
             actions = self.actor(states).cpu().data.numpy()
@@ -327,7 +344,7 @@ class MATD3AgentConv(AgentBase):
             actions += np.random.normal(0, self.action_val_high * self.exploration_noise,
                                         self.action_size) * self.noise_scalar
             self.noise_scalar *= self.noise_reduction_factor
-        return np.clip(actions, self.action_val_low, self.action_val_high)
+        return np.rint(np.clip(actions, self.action_val_low, self.action_val_high))
 
     def step(self, state, action, reward, next_state, done):
         """Save experience in replay memory, and use random sample from buffer to learn."""
